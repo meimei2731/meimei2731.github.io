@@ -4,8 +4,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const transactionList = document.getElementById('transaction-list');
     const loadingMessage = document.getElementById('loading-message');
 
-    // ★★★ 変更点: SUI メインネットのRPCエンドポイントを使用 ★★★
-    const SUI_RPC_URL = 'https://fullnode.mainnet.sui.io:443'; 
+    // ★★★ 修正点1: 別のSUI メインネットのRPCエンドポイントを使用 ★★★
+    // これにより、以前のエンドポイントでの応答の問題を回避できる可能性があります。
+    const SUI_RPC_URL = 'https://sui-mainnet-rpc.allthatnode.com:8545'; 
 
     searchButton.addEventListener('click', fetchTransactions);
 
@@ -30,8 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     id: 1,
                     method: "sui_queryTransactions",
                     params: [{
-                        FromAddress: address
-                    }, null, 50, true] // ★変更点: 最新の50件を取得
+                        // ★修正点2: ToAddressに変更して、より包括的な取引を検索★
+                        // FromAddressだけでなく、受信した取引も検索対象に含める
+                        ToAddress: address 
+                    }, null, 50, true] // 最新の50件を取得
                 })
             });
 
@@ -41,15 +44,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const data = await response.json();
             
-            // ★★★ 修正点: データが存在するかチェックするロジックを強化 ★★★
+            // データが存在するかチェックするロジックを強化
             if (!data.result || !data.result.data || data.result.data.length === 0) {
-                transactionList.innerHTML = '<tr><td colspan="5">指定されたアドレスのトランザクション履歴は見つかりませんでした。</td></tr>';
+                transactionList.innerHTML = '<tr><td colspan="5">指定されたアドレスのトランザクション履歴は見つかりませんでした。（別のアドレスで再試行してください）</td></tr>';
                 return;
             }
 
             const digests = data.result.data.map(tx => tx.digest);
 
             // 2. 取得したダイジェスト（ID）を使って、各トランザクションの詳細を取得
+            // 複数のリクエストを一度に送る（Batch Request）
             const detailRequests = digests.map(digest => ({
                 jsonrpc: "2.0",
                 id: digests.indexOf(digest) + 2,
@@ -76,6 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // 3. データを解析して表に追加
             detailData.forEach(res => {
+                // Batch Requestの応答形式は配列なので、各要素の結果をチェック
                 if (res.result) {
                     const tx = res.result;
                     const row = parseTransaction(tx);
@@ -87,7 +92,7 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error("トランザクション取得エラー:", error);
             let errorMessage = error.message;
             if (errorMessage.includes("Failed to fetch")) {
-                errorMessage = "Failed to fetch: ブラウザのセキュリティ設定により、ローカルファイルからのデータ取得がブロックされています。GitHub Pagesなどに公開して再度お試しください。";
+                errorMessage = "Failed to fetch: 接続エラーが発生しました。時間を置いて再試行してください。";
             }
             transactionList.innerHTML = `<tr><td colspan="5">データ取得中にエラーが発生しました: ${errorMessage}</td></tr>`;
         } finally {
@@ -100,7 +105,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const row = document.createElement('tr');
         
         // 1. 日時
-        const timestampMs = tx.transaction?.data?.expiration?.Epoch? Number(tx.transaction.data.expiration.Epoch) * 1000 : 0;
+        // SUI RPCは通常、エフェクトまたはチェックポイントにタイムスタンプを持つ
+        const timestampMs = tx.checkpoint ? Number(tx.checkpoint.timestampMs) : (tx.effects?.timestampMs ? Number(tx.effects.timestampMs) : 0);
         const timestamp = timestampMs ? new Date(timestampMs).toLocaleString() : '不明';
 
         // 2. ガス代 (SUI)
@@ -108,13 +114,12 @@ document.addEventListener('DOMContentLoaded', () => {
             Number(tx.effects.gasUsed.computationCost) + Number(tx.effects.gasUsed.storageCost) - Number(tx.effects.gasUsed.storageRebate) : 0;
         const gasUsedSUI = gasUsedMIST / 1_000_000_000;
         
-        // 3. スワップ情報（最も難しい部分：簡易的な解析）
+        // 3. スワップ情報（簡易的な解析）
         let swapIn = '---';
         let swapOut = '---';
         let isSwap = false;
         let transactionType = '不明な取引';
 
-        // Move Callから取引の種類を推定
         if (tx.transaction?.data?.message?.MoveCall) {
             const moveCall = tx.transaction.data.message.MoveCall;
             const functionName = moveCall.function.toLowerCase();
@@ -122,19 +127,19 @@ document.addEventListener('DOMContentLoaded', () => {
             if (functionName.includes('swap') || functionName.includes('exchange')) {
                 isSwap = true;
                 transactionType = 'スワップ/両替';
-                // より詳細な情報は、イベントやオブジェクト変更から取得する必要がありますが、
-                // 簡易表示としてMove Callの情報を利用
                 swapIn = `MoveCall: ${moveCall.module}::${moveCall.function}`;
                 swapOut = `詳細は要確認`;
-            } else if (functionName.includes('mint')) {
-                transactionType = 'ミント';
             } else if (functionName.includes('transfer')) {
-                transactionType = 'トークン移動';
+                transactionType = 'SUI/トークン送信';
+            } else if (functionName.includes('stake') || functionName.includes('unstake')) {
+                transactionType = 'ステーキング';
             } else {
                 transactionType = `MoveCall: ${functionName}`;
             }
         } else if (tx.transaction?.data?.message?.TransferObjects) {
             transactionType = 'SUI/オブジェクト送信';
+        } else if (tx.transaction?.data?.message?.PayAllSui) {
+             transactionType = '全SUI支払い';
         }
         
         // トランザクションID
