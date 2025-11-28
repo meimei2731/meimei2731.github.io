@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ★★★ 修正点1: 別のSUI メインネットのRPCエンドポイントを使用 ★★★
     // これにより、以前のエンドポイントでの応答の問題を回避できる可能性があります。
-    const SUI_RPC_URL = 'https://sui-mainnet-rpc.allthatnode.com:8545'; 
+    const SUI_RPC_URL = 'https://fullnode.mainnet.sui.io/';
 
     searchButton.addEventListener('click', fetchTransactions);
 
@@ -163,3 +163,4 @@ document.addEventListener('DOMContentLoaded', () => {
         return row;
     }
 });
+
