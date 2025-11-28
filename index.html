@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SUI トランザクション履歴ビューア</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #address-input { width: 500px; padding: 10px; margin-right: 10px; }
+        #search-button { padding: 10px 20px; cursor: pointer; }
+        #results-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        #results-table th, #results-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        #results-table th { background-color: #f2f2f2; }
+        .loading { color: gray; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>SUI トランザクション履歴ビューア</h1>
+    
+    <label for="address-input">SUI ウォレットアドレス:</label>
+    <input type="text" id="address-input" placeholder="0x..." value="0x89c74577f8a7d65691f1a580a65342a77a94f61f52d9a6c65b533f81e35a9096">
+    <button id="search-button">履歴を表示</button>
+
+    <div id="loading-message" class="loading" style="display: none;">データを取得中です...</div>
+
+    <table id="results-table">
+        <thead>
+            <tr>
+                <th>日時</th>
+                <th>スワップ元コイン/量</th>
+                <th>スワップ先コイン/量</th>
+                <th>ガス代 (SUI)</th>
+                <th>トランザクションID</th>
+            </tr>
+        </thead>
+        <tbody id="transaction-list">
+            </tbody>
+    </table>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
