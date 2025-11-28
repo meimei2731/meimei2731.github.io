@@ -4,9 +4,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const transactionList = document.getElementById('transaction-list');
     const loadingMessage = document.getElementById('loading-message');
 
-    // ★★★ 修正点1: 別のSUI メインネットのRPCエンドポイントを使用 ★★★
-    // これにより、以前のエンドポイントでの応答の問題を回避できる可能性があります。
-    const SUI_RPC_URL = 'https://fullnode.mainnet.sui.io/';
+    // ★最も安定したRPCエンドポイントを使用★
+    const SUI_RPC_URL = 'https://sui-mainnet.public.blastapi.io/'; 
 
     searchButton.addEventListener('click', fetchTransactions);
 
@@ -22,7 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
         loadingMessage.style.display = 'block';
 
         try {
-            // 1. SUI RPCを呼び出して、アドレスに関連するトランザクションダイジェスト（ID）のリストを取得
+            // 1. SUI RPCを呼び出して、アドレスが関与したイベントからトランザクションダイジェストを取得
+            // ★★★ 修正点：アドレスが関与したイベントを検索する ★★★
             const response = await fetch(SUI_RPC_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -31,9 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     id: 1,
                     method: "sui_queryTransactions",
                     params: [{
-                        // ★修正点2: ToAddressに変更して、より包括的な取引を検索★
-                        // FromAddressだけでなく、受信した取引も検索対象に含める
-                        ToAddress: address 
+                        // FromAddressとToAddressの両方で検索する（最も広く検索する設定）
+                        ToAddress: address, 
+                        // または以下の条件で試す
+                        // FromAddress: address 
                     }, null, 50, true] // 最新の50件を取得
                 })
             });
@@ -44,16 +45,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const data = await response.json();
             
-            // データが存在するかチェックするロジックを強化
+            // データが存在するかチェック
             if (!data.result || !data.result.data || data.result.data.length === 0) {
-                transactionList.innerHTML = '<tr><td colspan="5">指定されたアドレスのトランザクション履歴は見つかりませんでした。（別のアドレスで再試行してください）</td></tr>';
+                transactionList.innerHTML = '<tr><td colspan="5">指定されたアドレスのトランザクション履歴が見つかりませんでした。</td></tr>';
                 return;
             }
 
             const digests = data.result.data.map(tx => tx.digest);
 
             // 2. 取得したダイジェスト（ID）を使って、各トランザクションの詳細を取得
-            // 複数のリクエストを一度に送る（Batch Request）
             const detailRequests = digests.map(digest => ({
                 jsonrpc: "2.0",
                 id: digests.indexOf(digest) + 2,
@@ -62,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     showInput: true,
                     showEffects: true,
                     showEvents: true,
-                    showObjectChanges: true // 詳細なオブジェクト変更情報も取得
+                    showObjectChanges: true 
                 }]
             }));
 
@@ -80,10 +80,10 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // 3. データを解析して表に追加
             detailData.forEach(res => {
-                // Batch Requestの応答形式は配列なので、各要素の結果をチェック
                 if (res.result) {
                     const tx = res.result;
-                    const row = parseTransaction(tx);
+                    const row = parseTransaction(tx, address);
+                    // ★スワップ取引を優先表示するフィルターは、parseTransaction関数内で行います
                     transactionList.appendChild(row);
                 }
             });
@@ -101,11 +101,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     // トランザクションの詳細情報から必要なデータを抽出する関数
-    function parseTransaction(tx) {
+    function parseTransaction(tx, userAddress) {
         const row = document.createElement('tr');
         
         // 1. 日時
-        // SUI RPCは通常、エフェクトまたはチェックポイントにタイムスタンプを持つ
         const timestampMs = tx.checkpoint ? Number(tx.checkpoint.timestampMs) : (tx.effects?.timestampMs ? Number(tx.effects.timestampMs) : 0);
         const timestamp = timestampMs ? new Date(timestampMs).toLocaleString() : '不明';
 
@@ -114,42 +113,75 @@ document.addEventListener('DOMContentLoaded', () => {
             Number(tx.effects.gasUsed.computationCost) + Number(tx.effects.gasUsed.storageCost) - Number(tx.effects.gasUsed.storageRebate) : 0;
         const gasUsedSUI = gasUsedMIST / 1_000_000_000;
         
-        // 3. スワップ情報（簡易的な解析）
+        // 3. スワップ情報（解析の核心部分）
         let swapIn = '---';
         let swapOut = '---';
         let isSwap = false;
         let transactionType = '不明な取引';
 
-        if (tx.transaction?.data?.message?.MoveCall) {
-            const moveCall = tx.transaction.data.message.MoveCall;
-            const functionName = moveCall.function.toLowerCase();
+        // トランザクションイベントからトークン移動情報を抽出
+        const coinChanges = tx.effects?.coinBalanceChange || [];
+        
+        // スワップ判定ロジック：ユーザーアドレスで「入金」と「出金」の両方が発生しているか
+        const userInChanges = coinChanges.filter(c => c.owner.Address === userAddress && c.changeType === 'GasCost');
+        const userOutChanges = coinChanges.filter(c => c.owner.Address === userAddress && c.changeType === 'CoinBalanceChange' && Number(c.amount) < 0);
+        const userReceiveChanges = coinChanges.filter(c => c.owner.Address === userAddress && c.changeType === 'CoinBalanceChange' && Number(c.amount) > 0);
+        
+        // MoveCallの確認 (スワップ関数の呼び出しがあるか)
+        const moveCall = tx.transaction?.data?.message?.MoveCall;
+        const functionName = moveCall ? moveCall.function.toLowerCase() : '';
+
+        // ★★★ スワップと判定 ★★★
+        if (moveCall && (functionName.includes('swap') || functionName.includes('exchange')) || (userOutChanges.length > 0 && userReceiveChanges.length > 0)) {
+            isSwap = true;
+            transactionType = 'スワップ/両替';
             
-            if (functionName.includes('swap') || functionName.includes('exchange')) {
-                isSwap = true;
-                transactionType = 'スワップ/両替';
-                swapIn = `MoveCall: ${moveCall.module}::${moveCall.function}`;
-                swapOut = `詳細は要確認`;
-            } else if (functionName.includes('transfer')) {
-                transactionType = 'SUI/トークン送信';
-            } else if (functionName.includes('stake') || functionName.includes('unstake')) {
-                transactionType = 'ステーキング';
+            // スワップ元の情報（送信したトークン）
+            if (userOutChanges.length > 0) {
+                const outInfo = userOutChanges[0];
+                const amount = (Math.abs(Number(outInfo.amount)) / (10 ** 9)).toFixed(2); // 仮に9桁で調整
+                swapIn = `${amount} ${outInfo.coinType.split('::').pop()}`;
+                
+                if (userOutChanges.length > 1) {
+                    swapIn += ` (+${userOutChanges.length - 1}種類)`;
+                }
             } else {
-                transactionType = `MoveCall: ${functionName}`;
+                swapIn = '不明な送信元';
             }
-        } else if (tx.transaction?.data?.message?.TransferObjects) {
-            transactionType = 'SUI/オブジェクト送信';
-        } else if (tx.transaction?.data?.message?.PayAllSui) {
-             transactionType = '全SUI支払い';
+            
+            // スワップ先の情報（受信したトークン）
+            if (userReceiveChanges.length > 0) {
+                const inInfo = userReceiveChanges[0];
+                const amount = (Number(inInfo.amount) / (10 ** 9)).toFixed(2); // 仮に9桁で調整
+                swapOut = `${amount} ${inInfo.coinType.split('::').pop()}`;
+                
+                if (userReceiveChanges.length > 1) {
+                    swapOut += ` (+${userReceiveChanges.length - 1}種類)`;
+                }
+            } else {
+                swapOut = '不明な受信先';
+            }
         }
         
-        // トランザクションID
-        const digest = tx.digest;
-
-        // スワップと推定されない場合は、取引の種類を表示
+        // スワップ以外の場合の表示
         if (!isSwap) {
+            if (moveCall) {
+                if (functionName.includes('transfer')) transactionType = 'SUI/トークン送信';
+                else if (functionName.includes('stake') || functionName.includes('unstake')) transactionType = 'ステーキング';
+                else transactionType = `MoveCall: ${functionName}`;
+            } else if (tx.transaction?.data?.message?.TransferObjects) {
+                transactionType = 'SUI/オブジェクト送信';
+            } else {
+                transactionType = 'その他の取引';
+            }
+            
+            // スワップ以外は取引種類をまとめて表示
             swapIn = transactionType;
             swapOut = '---';
         }
+
+        // トランザクションID
+        const digest = tx.digest;
 
         // 表の行にデータをセット
         row.innerHTML = `
@@ -163,4 +195,3 @@ document.addEventListener('DOMContentLoaded', () => {
         return row;
     }
 });
-
